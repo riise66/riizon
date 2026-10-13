@@ -9,16 +9,19 @@ import requests
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# Feeds RSS de chollos (gratis, sin scraping frágil). Añade los que quieras.
+# "nuevos" = ofertas recién publicadas (los errores de precio salen aquí primero)
 FEEDS = [
+    "https://www.chollometro.com/rss/nuevos",
     "https://www.chollometro.com/rss/hot",
 ]
 
-# Solo avisa si el título contiene alguna de estas palabras (vacío = todo).
-KEYWORDS = []  # ejemplo: ["ssd", "rtx", "ryzen", "monitor"]
+# Solo ofertas de esta tienda (vacío = todas)
+STORE = "amazon"
 
-# Descuento mínimo si el título lo indica (ej. "-40%"). 0 = no filtrar.
-MIN_DISCOUNT = 0
+# Te avisa si se cumple CUALQUIERA de estas condiciones:
+MIN_DISCOUNT = 40          # descuento >= 40% (si el título lo indica)
+MAX_PRICE = 5.0            # precio <= 5 € (ej. las ofertas de 2 €)
+ALERT_WORDS = ["error de precio", "error precio", "bug", "chollazo", "mínimo histórico", "minimo historico"]
 
 SEEN_FILE = Path("seen.json")
 
@@ -30,20 +33,35 @@ def load_seen():
 
 
 def save_seen(seen):
-    SEEN_FILE.write_text(json.dumps(sorted(seen)[-2000:]))
+    SEEN_FILE.write_text(json.dumps(sorted(seen)[-3000:]))
 
 
-def discount(title):
-    m = re.search(r"-?(\d{2,3})\s?%", title)
+def discount(text):
+    m = re.search(r"-\s?(\d{2,3})\s?%", text)
     return int(m.group(1)) if m else 0
 
 
-def passes(title):
-    if KEYWORDS and not any(k.lower() in title.lower() for k in KEYWORDS):
+def lowest_price(text):
+    prices = []
+    for m in re.finditer(r"(\d+(?:[.,]\d{1,2})?)\s?(?:€|eur)", text, re.I):
+        try:
+            prices.append(float(m.group(1).replace(",", ".")))
+        except ValueError:
+            pass
+    return min(prices) if prices else None
+
+
+def passes(entry):
+    title = entry.get("title", "")
+    blob = f"{title} {entry.get('summary', '')}".lower()
+    if STORE and STORE not in blob:
         return False
-    if MIN_DISCOUNT and discount(title) < MIN_DISCOUNT:
-        return False
-    return True
+    price = lowest_price(title)
+    return (
+        discount(title) >= MIN_DISCOUNT
+        or (price is not None and price <= MAX_PRICE)
+        or any(w in blob for w in ALERT_WORDS)
+    )
 
 
 def send(text):
@@ -65,7 +83,7 @@ def main():
             seen.add(uid)
             if first_run:  # no inundar el primer día
                 continue
-            if passes(e.title):
+            if passes(e):
                 send(f"🔥 {e.title}\n{e.link}")
     save_seen(seen)
 
